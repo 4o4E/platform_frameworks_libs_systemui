@@ -50,7 +50,10 @@ import java.lang.annotation.Retention;
 import app.lawnchair.icons.CustomAdaptiveIconDrawable;
 import app.lawnchair.icons.ExtendedBitmapDrawable;
 import app.lawnchair.icons.FixedScaleDrawable;
+import app.lawnchair.icons.IconCropDetector;
 import app.lawnchair.icons.IconPreferencesKt;
+import app.lawnchair.icons.IconRenderingDrawable;
+import app.lawnchair.icons.IconRenderingMode;
 
 /**
  * This class will be moved to androidx library. There shouldn't be any dependency outside
@@ -103,6 +106,8 @@ public class BaseIconFactory implements AutoCloseable {
 
     @Nullable
     private IconNormalizer mNormalizer;
+    @Nullable
+    private IconCropDetector mCropDetector;
 
     @Nullable
     private ShadowGenerator mShadowGenerator;
@@ -243,13 +248,17 @@ public class BaseIconFactory implements AutoCloseable {
     @NonNull
     public BitmapInfo createBadgedIconBitmap(@NonNull Drawable icon,
             @Nullable IconOptions options) {
+        IconRenderingDrawable request = icon instanceof IconRenderingDrawable
+                ? (IconRenderingDrawable) icon : null;
+        Drawable sourceIcon = request == null ? icon : request.getDrawable();
+        boolean centered = request != null && request.getMode() == IconRenderingMode.CENTERED;
         float[] scale = new float[1];
         var adaptiveIcon = normalizeAndWrapToAdaptiveIcon(icon, null, scale);
 
         Bitmap bitmap = createIconBitmap(adaptiveIcon, scale[0],
             options == null ? MODE_WITH_SHADOW : options.mGenerationMode);
 
-        if (ATLEAST_OREO && icon instanceof AdaptiveIconDrawable) {
+        if (ATLEAST_OREO && !centered && sourceIcon instanceof AdaptiveIconDrawable) {
             mCanvas.setBitmap(bitmap);
             getShadowGenerator().recreateIcon(Bitmap.createBitmap(bitmap), mCanvas);
             mCanvas.setBitmap(null);
@@ -259,15 +268,17 @@ public class BaseIconFactory implements AutoCloseable {
                 ? options.mExtractedColor : mColorExtractor.findDominantColorByHue(bitmap);
         BitmapInfo info = BitmapInfo.of(bitmap, color);
 
-        if (ATLEAST_T && mMonoIconEnabled && icon instanceof AdaptiveIconDrawable) {
-            Drawable mono = getMonochromeDrawable(((AdaptiveIconDrawable) icon));
+        // Complete-original mode keeps the selected artwork and colors, without theme substitution.
+        Drawable themeIcon = request == null ? icon : adaptiveIcon;
+        if (!centered && ATLEAST_T && mMonoIconEnabled && themeIcon instanceof AdaptiveIconDrawable) {
+            Drawable mono = getMonochromeDrawable(((AdaptiveIconDrawable) themeIcon));
             if (mono != null) {
-                info.setMonoIcon(createIconBitmap(icon, scale[0], MODE_ALPHA), this);
+                info.setMonoIcon(createIconBitmap(themeIcon, scale[0], MODE_ALPHA), this);
             }
         }
         info = info.withFlags(getBitmapFlagOp(options));
-        return icon instanceof BitmapInfo.Extender
-            ? ((BitmapInfo.Extender) icon).getExtendedInfo(bitmap, color, this, scale[0]) : info;
+        return !centered && sourceIcon instanceof BitmapInfo.Extender
+            ? ((BitmapInfo.Extender) sourceIcon).getExtendedInfo(bitmap, color, this, scale[0]) : info;
     }
 
     /**
@@ -352,26 +363,39 @@ public class BaseIconFactory implements AutoCloseable {
               @Nullable final RectF outIconBounds,
               @NonNull final float[] outScale) {
 
-        boolean shrinkNonAdaptiveIcons = ATLEAST_OREO;
-        
         if (icon == null) {
             return null;
         }
-
+        IconRenderingMode mode = IconRenderingMode.FOLLOW_GLOBAL;
+        if (icon instanceof IconRenderingDrawable request) {
+            mode = request.getMode();
+            icon = request.getDrawable();
+        }
+        if (mode == IconRenderingMode.CENTERED) {
+            icon = centerOriginalIcon(icon, getWrapperIcon());
+            outScale[0] = getNormalizer().getScale(icon, outIconBounds, null, null);
+            return icon;
+        }
+        if (mode == IconRenderingMode.ADAPTIVE) {
+            icon = CustomAdaptiveIconDrawable.wrapNonNull(icon);
+        }
+        boolean shrinkNonAdaptiveIcons = ATLEAST_OREO;
         if (shrinkNonAdaptiveIcons) {
             boolean isFromIconPack = ExtendedBitmapDrawable.isFromIconPack(icon);
-            shrinkNonAdaptiveIcons = !isFromIconPack && IconPreferencesKt.shouldWrapAdaptive(mContext);
+            shrinkNonAdaptiveIcons = mode == IconRenderingMode.ADAPTIVE
+                    || (!isFromIconPack && IconPreferencesKt.shouldWrapAdaptive(mContext));
         }
 
         float scale;
 
         if (shrinkNonAdaptiveIcons) {
-            if (mWrapperIcon == null) {
-                Drawable background = new ColorDrawable(mContext.getColor(R.color.legacy_icon_background));
-                Drawable foreground = new FixedScaleDrawable ();
-                mWrapperIcon = new CustomAdaptiveIconDrawable(background, foreground);
+            CustomAdaptiveIconDrawable dr = getWrapperIcon();
+            if (!(icon instanceof AdaptiveIconDrawable)
+                    && (mode == IconRenderingMode.ADAPTIVE || canAutoCrop(icon, dr))) {
+                icon = fillIconToShape(icon, dr);
+                outScale[0] = getNormalizer().getScale(icon, outIconBounds, null, null);
+                return icon;
             }
-            AdaptiveIconDrawable dr = (AdaptiveIconDrawable) mWrapperIcon;
             dr.setBounds(0, 0, 1, 1);
             boolean[] outShape = new boolean[1];
             scale = getNormalizer().getScale(icon, outIconBounds, dr.getIconMask(), outShape);
@@ -400,6 +424,47 @@ public class BaseIconFactory implements AutoCloseable {
         outScale[0] = scale;
         return icon;
 
+    }
+
+    private CustomAdaptiveIconDrawable newWrapperIcon() {
+        return new CustomAdaptiveIconDrawable(
+                new ColorDrawable(mContext.getColor(R.color.legacy_icon_background)),
+                new FixedScaleDrawable());
+    }
+
+    private CustomAdaptiveIconDrawable getWrapperIcon() {
+        if (mWrapperIcon == null) mWrapperIcon = newWrapperIcon();
+        return (CustomAdaptiveIconDrawable) mWrapperIcon;
+    }
+
+    /** The entire source, including an adaptive icon's own mask/background, fits inside the frame. */
+    private CustomAdaptiveIconDrawable centerOriginalIcon(
+            Drawable source, CustomAdaptiveIconDrawable wrapper) {
+        int background = IconPreferencesKt.getWrapperBackgroundColor(mContext, source);
+        // Native adaptive masks may differ from our outer mask; don't poison its normalizer cache.
+        float scale = source instanceof AdaptiveIconDrawable
+                ? 1f : getNormalizer().getScale(source, null, null, null);
+        FixedScaleDrawable foreground = (FixedScaleDrawable) wrapper.getForeground();
+        foreground.setDrawable(source);
+        foreground.setScale(scale);
+        ((ColorDrawable) wrapper.getBackground()).setColor(background);
+        return wrapper;
+    }
+
+    private boolean canAutoCrop(Drawable source, CustomAdaptiveIconDrawable shape) {
+        if (mCropDetector == null) mCropDetector = new IconCropDetector(mIconBitmapSize);
+        return mCropDetector.canCrop(source, shape);
+    }
+
+    /** Explicit adaptation fills the selected shape; automatic adaptation first checks cut pixels. */
+    private CustomAdaptiveIconDrawable fillIconToShape(
+            Drawable source, CustomAdaptiveIconDrawable wrapper) {
+        int background = IconPreferencesKt.getWrapperBackgroundColor(mContext, source);
+        FixedScaleDrawable foreground = (FixedScaleDrawable) wrapper.getForeground();
+        foreground.setDrawable(source);
+        foreground.setScaleToFill();
+        ((ColorDrawable) wrapper.getBackground()).setColor(background);
+        return wrapper;
     }
 
     /**
@@ -443,6 +508,27 @@ public class BaseIconFactory implements AutoCloseable {
      */
     public CustomAdaptiveIconDrawable wrapToAdaptiveIcon(@NonNull Drawable icon,
             @Nullable final RectF outIconBounds) {
+        IconRenderingMode mode = IconRenderingMode.FOLLOW_GLOBAL;
+        if (icon instanceof IconRenderingDrawable request) {
+            mode = request.getMode();
+            icon = request.getDrawable();
+            if (request.getMode() == IconRenderingMode.CENTERED) {
+                // Launch animations retain this drawable after the pooled factory is released.
+                CustomAdaptiveIconDrawable centered = centerOriginalIcon(icon, newWrapperIcon());
+                if (outIconBounds != null) getNormalizer().getScale(centered, outIconBounds, null, null);
+                return centered;
+            }
+            icon = CustomAdaptiveIconDrawable.wrapNonNull(icon);
+        }
+        if (!(icon instanceof AdaptiveIconDrawable)
+                && (mode == IconRenderingMode.ADAPTIVE
+                    || (!ExtendedBitmapDrawable.isFromIconPack(icon)
+                        && IconPreferencesKt.shouldWrapAdaptive(mContext)
+                        && canAutoCrop(icon, getWrapperIcon())))) {
+            CustomAdaptiveIconDrawable filled = fillIconToShape(icon, newWrapperIcon());
+            if (outIconBounds != null) getNormalizer().getScale(filled, outIconBounds, null, null);
+            return filled;
+        }
         if (icon instanceof CustomAdaptiveIconDrawable aid) {
             return aid;
         } else {

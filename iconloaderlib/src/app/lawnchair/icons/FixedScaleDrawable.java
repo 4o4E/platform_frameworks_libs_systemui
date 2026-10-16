@@ -5,6 +5,7 @@ import static com.android.launcher3.icons.BaseIconFactory.LEGACY_ICON_SCALE;
 import android.content.res.Resources;
 import android.content.res.Resources.Theme;
 import android.graphics.Canvas;
+import android.graphics.drawable.AdaptiveIconDrawable;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.DrawableWrapper;
 import android.util.AttributeSet;
@@ -48,6 +49,18 @@ public class FixedScaleDrawable extends DrawableWrapper {
             mScaleX *= w / h;
         } else if (w > h && h > 0) {
             mScaleY *= h / w;
+        }
+    }
+
+    /** Cover the visible mask while preserving the source ratio, compensating adaptive overscan. */
+    public void setScaleToFill() {
+        float h = getIntrinsicHeight();
+        float w = getIntrinsicWidth();
+        mScaleX = mScaleY = 1f / (1 + 2 * AdaptiveIconDrawable.getExtraInsetFraction());
+        if (h > w && w > 0) {
+            mScaleY *= h / w;
+        } else if (w > h && h > 0) {
+            mScaleX *= w / h;
         }
     }
 }

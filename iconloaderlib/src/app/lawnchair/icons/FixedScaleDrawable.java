@@ -18,6 +18,7 @@ import org.xmlpull.v1.XmlPullParser;
 public class FixedScaleDrawable extends DrawableWrapper {
 
     private float mScaleX, mScaleY;
+    private float mOffsetX, mOffsetY;
 
     public FixedScaleDrawable() {
         super(new ColorDrawable());
@@ -30,6 +31,7 @@ public class FixedScaleDrawable extends DrawableWrapper {
         int saveCount = canvas.save();
         canvas.scale(mScaleX, mScaleY,
                 getBounds().exactCenterX(), getBounds().exactCenterY());
+        canvas.translate(mOffsetX * getBounds().width(), mOffsetY * getBounds().height());
         super.draw(canvas);
         canvas.restoreToCount(saveCount);
     }
@@ -41,6 +43,7 @@ public class FixedScaleDrawable extends DrawableWrapper {
     public void inflate(Resources r, XmlPullParser parser, AttributeSet attrs, Theme theme) { }
 
     public void setScale(float scale) {
+        mOffsetX = mOffsetY = 0;
         float h = getIntrinsicHeight();
         float w = getIntrinsicWidth();
         mScaleX = scale * LEGACY_ICON_SCALE;
@@ -54,6 +57,7 @@ public class FixedScaleDrawable extends DrawableWrapper {
 
     /** Cover the visible mask while preserving the source ratio, compensating adaptive overscan. */
     public void setScaleToFill() {
+        mOffsetX = mOffsetY = 0;
         float h = getIntrinsicHeight();
         float w = getIntrinsicWidth();
         mScaleX = mScaleY = 1f / (1 + 2 * AdaptiveIconDrawable.getExtraInsetFraction());
@@ -62,5 +66,13 @@ public class FixedScaleDrawable extends DrawableWrapper {
         } else if (w > h && h > 0) {
             mScaleX *= w / h;
         }
+    }
+
+    public void setScaleToFill(float zoom, float centerX, float centerY) {
+        setScaleToFill();
+        mScaleX *= zoom;
+        mScaleY *= zoom;
+        mOffsetX = .5f - centerX;
+        mOffsetY = .5f - centerY;
     }
 }

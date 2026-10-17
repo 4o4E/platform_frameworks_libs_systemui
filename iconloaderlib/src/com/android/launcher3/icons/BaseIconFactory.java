@@ -392,7 +392,7 @@ public class BaseIconFactory implements AutoCloseable {
             CustomAdaptiveIconDrawable dr = getWrapperIcon();
             if (!(icon instanceof AdaptiveIconDrawable)
                     && (mode == IconRenderingMode.ADAPTIVE || canAutoCrop(icon, dr))) {
-                icon = fillIconToShape(icon, dr);
+                icon = fillIconToShape(icon, dr, mode == IconRenderingMode.ADAPTIVE);
                 outScale[0] = getNormalizer().getScale(icon, outIconBounds, null, null);
                 return icon;
             }
@@ -458,11 +458,18 @@ public class BaseIconFactory implements AutoCloseable {
 
     /** Explicit adaptation fills the selected shape; automatic adaptation first checks cut pixels. */
     private CustomAdaptiveIconDrawable fillIconToShape(
-            Drawable source, CustomAdaptiveIconDrawable wrapper) {
+            Drawable source, CustomAdaptiveIconDrawable wrapper, boolean force) {
         int background = IconPreferencesKt.getWrapperBackgroundColor(mContext, source);
         FixedScaleDrawable foreground = (FixedScaleDrawable) wrapper.getForeground();
         foreground.setDrawable(source);
-        foreground.setScaleToFill();
+        if (force) {
+            if (mCropDetector == null) mCropDetector = new IconCropDetector(mIconBitmapSize);
+            float zoom = mCropDetector.getFillScale(source, wrapper);
+            foreground.setScaleToFill(zoom,
+                    mCropDetector.getFillCenterX(), mCropDetector.getFillCenterY());
+        } else {
+            foreground.setScaleToFill();
+        }
         ((ColorDrawable) wrapper.getBackground()).setColor(background);
         return wrapper;
     }
@@ -525,7 +532,8 @@ public class BaseIconFactory implements AutoCloseable {
                     || (!ExtendedBitmapDrawable.isFromIconPack(icon)
                         && IconPreferencesKt.shouldWrapAdaptive(mContext)
                         && canAutoCrop(icon, getWrapperIcon())))) {
-            CustomAdaptiveIconDrawable filled = fillIconToShape(icon, newWrapperIcon());
+            CustomAdaptiveIconDrawable filled = fillIconToShape(
+                    icon, newWrapperIcon(), mode == IconRenderingMode.ADAPTIVE);
             if (outIconBounds != null) getNormalizer().getScale(filled, outIconBounds, null, null);
             return filled;
         }

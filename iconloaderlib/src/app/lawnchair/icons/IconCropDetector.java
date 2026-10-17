@@ -28,6 +28,7 @@ public final class IconCropDetector {
     private final int[] mMaskPixels;
     private int mMaskWidth;
     private int mMaskHeight;
+    private IconMaskCoverage mCoverage;
 
     public IconCropDetector(int size) {
         mSize = size;
@@ -41,6 +42,28 @@ public final class IconCropDetector {
     }
 
     public boolean canCrop(Drawable source, AdaptiveIconDrawable shape) {
+        prepare(source, shape);
+        return canCropPixels(mPixels, mMaskPixels, mSize, mSourceBounds.left,
+                mSourceBounds.top, mSourceBounds.right, mSourceBounds.bottom);
+    }
+
+    public float getFillScale(Drawable source, AdaptiveIconDrawable shape) {
+        prepare(source, shape);
+        if (mCoverage == null) mCoverage = new IconMaskCoverage(mSize);
+        return mCoverage.update(mPixels, mMaskPixels, mSourceBounds.left, mSourceBounds.top,
+                mSourceBounds.right, mSourceBounds.bottom)
+                * (1 + 2f / Math.min(mSourceBounds.width(), mSourceBounds.height()));
+    }
+
+    public float getFillCenterX() {
+        return mCoverage.getCenterX();
+    }
+
+    public float getFillCenterY() {
+        return mCoverage.getCenterY();
+    }
+
+    private void prepare(Drawable source, AdaptiveIconDrawable shape) {
         int width = mSize;
         int height = mSize;
         int intrinsicWidth = source.getIntrinsicWidth();
@@ -75,8 +98,6 @@ public final class IconCropDetector {
             mMaskWidth = width;
             mMaskHeight = height;
         }
-        return canCropPixels(mPixels, mMaskPixels, mSize, mSourceBounds.left,
-                mSourceBounds.top, mSourceBounds.right, mSourceBounds.bottom);
     }
 
     static boolean canCropPixels(int[] pixels, int[] mask, int size,
